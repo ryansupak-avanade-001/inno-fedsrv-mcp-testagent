@@ -2,6 +2,6 @@ mcp:
   servers:
     default:
       sampling:
-        model: xai.grok-4
+        model: xai.grok-3
       transport: http
       url: http://0.0.0.0:8000/mcp/

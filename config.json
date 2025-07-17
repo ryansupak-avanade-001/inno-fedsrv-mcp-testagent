@@ -1,5 +1,5 @@
 {
-  "default_model": "xai.grok-4",
+  "default_model": "xai.grok-3",
   "default_mcp_serverOLD": "https://inno-fedsrv-mcp-api-e6dqece5afhgh8dc.southcentralus-01.azurewebsites.net/mcp/",
 	"default_mcp_server":"http://0.0.0.0:8000/mcp/",
   "xai_api_key": ""

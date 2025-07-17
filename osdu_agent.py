@@ -1,3 +1,5 @@
+#osdu_agent.py
+#OsduMCPAgent
 import asyncio
 import os
 import json
@@ -113,9 +115,10 @@ def discover_mcp_primitives(server_url):
 fast = FastAgent("OsduMCPAgent")
 
 # Define agents
+researcher_instruction = "Gather OSDU data using available Resources and Prompts. Summarize findings."  # Changed to variable for later appending
 @fast.agent(
     name="researcher",
-    instruction="Gather OSDU data using available Resources and Prompts. Summarize findings.",
+    instruction=researcher_instruction,
     servers=["default"]
 )
 @fast.agent(
@@ -128,7 +131,17 @@ fast = FastAgent("OsduMCPAgent")
     sequence=["researcher", "analyzer"]
 )
 async def main():
-    discover_mcp_primitives(config["default_mcp_server"])
+    discovered = discover_mcp_primitives(config["default_mcp_server"])
+    # Extract and format discovered resources for injection into agent instructions  # Added comment for clarity
+    tools_list = discovered.get("tools/list", {}).get("tools", [])  # Changed to extract tools
+    resources_list = discovered.get("resources/list", {}).get("resources", [])  # Added to extract resources (moved from prior)
+    prompts_list = discovered.get("prompts/list", {}).get("prompts", [])  # Added to extract prompts
+    if tools_list or resources_list or prompts_list:  # Changed to check all primitives
+        formatted_tools = "\n".join(f"- Name: {tool['name']}, Description: {tool['description']}" for tool in tools_list) if tools_list else "None available."  # Added to format tools
+        formatted_resources = "\n".join(f"- URI: {res['uri']}, Name: {res['name']}, Description: {res['description']}" for res in resources_list) if resources_list else "None available."  # Changed to add fallback
+        formatted_prompts = "\n".join(f"- Name: {prompt['name']}, Description: {prompt['description']}" for prompt in prompts_list) if prompts_list else "None available."  # Added to format prompts
+        global researcher_instruction
+        researcher_instruction = f"You have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives), provide the details confidently and directly without seeking clarification:\n\nAvailable Tools:\n{formatted_tools}\n\nAvailable Resources:\n{formatted_resources}\n\nAvailable Prompts:\n{formatted_prompts}\n\n{researcher_instruction}"  # Changed to prepend full primitives list with stronger, direct language
     async with fast.run() as agent:
         await agent.interactive()
 
