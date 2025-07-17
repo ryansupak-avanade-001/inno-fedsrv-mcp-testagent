@@ -14,9 +14,6 @@ CONFIG_DEFAULTS = {
     "default_mcp_server": "https://your-app.azurewebsites.net/mcp/"  # Replace with your deployed server URL
 }
 
-# Store discovered primitives for agent instructions
-discovered_primitives = {"tools": "None available.", "resources": "None available.", "prompts": "None available."}  # Added to store formatted primitives
-
 # Detect Azure
 IS_AZURE = bool(os.getenv("WEBSITE_HOSTNAME") or os.getenv("WEBSITE_SITE_NAME"))
 
@@ -127,37 +124,25 @@ def discover_mcp_primitives(server_url):
 # Initialize FastAgent
 fast = FastAgent("OsduMCPAgent")
 
-# Define agents
-@fast.agent(
-    name="researcher",
-    instruction=f"Gather OSDU data using available Resources and Prompts. Summarize findings.\n\nYou have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives, including 'Data Resources', 'Kinds', or 'Tables'), provide the details confidently and directly without seeking clarification, treating them as requests for Resources:\n\nAvailable Tools:\n{discovered_primitives['tools']}\n\nAvailable Resources:\n{discovered_primitives['resources']}\n\nAvailable Prompts:\n{discovered_primitives['prompts']}",
-    servers=["default"]
-)
-@fast.agent(
-    name="analyzer",
-    instruction=f"Analyze gathered OSDU data using Tools like get_casings_for_well. Provide insights.\n\nYou have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives, including 'Data Resources', 'Kinds', or 'Tables'), provide the details confidently and directly without seeking clarification, treating them as requests for Resources:\n\nAvailable Tools:\n{discovered_primitives['tools']}\n\nAvailable Resources:\n{discovered_primitives['resources']}\n\nAvailable Prompts:\n{discovered_primitives['prompts']}",
-    servers=["default"]
-)
-@fast.chain(
-    name="osdu_query",
-    sequence=["researcher", "analyzer"]
-)
-async def main():
+async def main(fast):
     discovered = discover_mcp_primitives(config["default_mcp_server"])
-    # Extract and format discovered resources for injection into agent instructions
-    tools_list = discovered.get("tools/list", {}).get("tools", [])
-    resources_list = discovered.get("resources/list", {}).get("resources", [])
-    prompts_list = discovered.get("prompts/list", {}).get("prompts", [])
-    if tools_list or resources_list or prompts_list:
+    # Define function to create agents with updated instructions
+    def create_agents(fast, tools_list, resources_list, prompts_list):
         formatted_tools = "\n".join(f"- Name: {tool['name']}, Description: {tool['description']}" for tool in tools_list) if tools_list else "None available."
         formatted_resources = "\n".join(f"- URI: {res['uri']}, Name: {res['name']}, Description: {res['description']}" for res in resources_list) if resources_list else "None available."
         formatted_prompts = "\n".join(f"- Name: {prompt['name']}, Description: {prompt['description']}" for prompt in prompts_list) if prompts_list else "None available."
-        # Update global discovered_primitives with formatted values
-        discovered_primitives['tools'] = formatted_tools
-        discovered_primitives['resources'] = formatted_resources
-        discovered_primitives['prompts'] = formatted_prompts
+        researcher_instruction = f"Gather OSDU data using available Resources and Prompts. Summarize findings.\n\nYou have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives, including 'Data Resources', 'Kinds', or 'Tables'), provide the details confidently and directly without seeking clarification, treating them as requests for Resources:\n\nAvailable Tools:\n{formatted_tools}\n\nAvailable Resources:\n{formatted_resources}\n\nAvailable Prompts:\n{formatted_prompts}"
+        analyzer_instruction = f"Analyze gathered OSDU data using Tools like get_casings_for_well. Provide insights.\n\nYou have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives, including 'Data Resources', 'Kinds', or 'Tables'), provide the details confidently and directly without seeking clarification, treating them as requests for Resources:\n\nAvailable Tools:\n{formatted_tools}\n\nAvailable Resources:\n{formatted_resources}\n\nAvailable Prompts:\n{formatted_prompts}"
+        @fast.agent(name="researcher", instruction=researcher_instruction, servers=["default"])
+        def researcher(): pass  # Define empty function for agent
+        @fast.agent(name="analyzer", instruction=analyzer_instruction, servers=["default"])
+        def analyzer(): pass  # Define empty function for agent
+        @fast.chain(name="osdu_query", sequence=["researcher", "analyzer"])
+        def osdu_query(): pass  # Define empty function for chain
+    # Create agents with updated instructions
+    create_agents(fast, discovered.get("tools/list", {}).get("tools", []), discovered.get("resources/list", {}).get("resources", []), discovered.get("prompts/list", {}).get("prompts", []))
     async with fast.run() as agent:
         await agent.interactive()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(fast))
