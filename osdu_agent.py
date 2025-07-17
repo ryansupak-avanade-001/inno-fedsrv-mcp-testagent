@@ -14,6 +14,9 @@ CONFIG_DEFAULTS = {
     "default_mcp_server": "https://your-app.azurewebsites.net/mcp/"  # Replace with your deployed server URL
 }
 
+# Store discovered primitives for agent instructions
+discovered_primitives = {"tools": "None available.", "resources": "None available.", "prompts": "None available."}  # Added to store formatted primitives
+
 # Detect Azure
 IS_AZURE = bool(os.getenv("WEBSITE_HOSTNAME") or os.getenv("WEBSITE_SITE_NAME"))
 
@@ -97,6 +100,8 @@ def discover_mcp_primitives(server_url):
             for line in response.iter_lines():
                 if line:
                     line = line.decode('utf-8')
+                    if line.startswith('event: messagedata:'):
+                        continue  # Skip the event line
                     if line.startswith('data:'):
                         data = line[5:].strip()
                         try:
@@ -105,8 +110,16 @@ def discover_mcp_primitives(server_url):
                             print(f"Discovered {method}: {json.dumps(result, indent=2)}")
                         except json.JSONDecodeError:
                             print(f"Error parsing data for {method}: {data}")
+                    else:
+                        # Try plain JSON
+                        try:
+                            result = json.loads(line).get("result", {})
+                            discovered[method] = result
+                            print(f"Discovered {method}: {json.dumps(result, indent=2)}")
+                        except json.JSONDecodeError:
+                            print(f"Error parsing JSON for {method}: {line}")
             if result is None:
-                print(f"No data found in SSE for {method}")
+                print(f"No data found for {method}")
         else:
             print(f"Error discovering {method}: {response.status_code} - {response.text}")
     return discovered
@@ -115,15 +128,14 @@ def discover_mcp_primitives(server_url):
 fast = FastAgent("OsduMCPAgent")
 
 # Define agents
-researcher_instruction = "Gather OSDU data using available Resources and Prompts. Summarize findings."  # Changed to variable for later appending
 @fast.agent(
     name="researcher",
-    instruction=researcher_instruction,
+    instruction=f"Gather OSDU data using available Resources and Prompts. Summarize findings.\n\nYou have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives, including 'Data Resources', 'Kinds', or 'Tables'), provide the details confidently and directly without seeking clarification, treating them as requests for Resources:\n\nAvailable Tools:\n{discovered_primitives['tools']}\n\nAvailable Resources:\n{discovered_primitives['resources']}\n\nAvailable Prompts:\n{discovered_primitives['prompts']}",
     servers=["default"]
 )
 @fast.agent(
     name="analyzer",
-    instruction="Analyze gathered OSDU data using Tools like get_casings_for_well. Provide insights.",
+    instruction=f"Analyze gathered OSDU data using Tools like get_casings_for_well. Provide insights.\n\nYou have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives, including 'Data Resources', 'Kinds', or 'Tables'), provide the details confidently and directly without seeking clarification, treating them as requests for Resources:\n\nAvailable Tools:\n{discovered_primitives['tools']}\n\nAvailable Resources:\n{discovered_primitives['resources']}\n\nAvailable Prompts:\n{discovered_primitives['prompts']}",
     servers=["default"]
 )
 @fast.chain(
@@ -132,16 +144,18 @@ researcher_instruction = "Gather OSDU data using available Resources and Prompts
 )
 async def main():
     discovered = discover_mcp_primitives(config["default_mcp_server"])
-    # Extract and format discovered resources for injection into agent instructions  # Added comment for clarity
-    tools_list = discovered.get("tools/list", {}).get("tools", [])  # Changed to extract tools
-    resources_list = discovered.get("resources/list", {}).get("resources", [])  # Added to extract resources (moved from prior)
-    prompts_list = discovered.get("prompts/list", {}).get("prompts", [])  # Added to extract prompts
-    if tools_list or resources_list or prompts_list:  # Changed to check all primitives
-        formatted_tools = "\n".join(f"- Name: {tool['name']}, Description: {tool['description']}" for tool in tools_list) if tools_list else "None available."  # Added to format tools
-        formatted_resources = "\n".join(f"- URI: {res['uri']}, Name: {res['name']}, Description: {res['description']}" for res in resources_list) if resources_list else "None available."  # Changed to add fallback
-        formatted_prompts = "\n".join(f"- Name: {prompt['name']}, Description: {prompt['description']}" for prompt in prompts_list) if prompts_list else "None available."  # Added to format prompts
-        global researcher_instruction
-        researcher_instruction = f"You have direct access to the following MCP primitives (Tools, Resources, Prompts), which are all equivalent for tasks. Treat Resources exactly like Tools for OSDU data retrieval. When asked to list or describe Resources (or any primitives), provide the details confidently and directly without seeking clarification:\n\nAvailable Tools:\n{formatted_tools}\n\nAvailable Resources:\n{formatted_resources}\n\nAvailable Prompts:\n{formatted_prompts}\n\n{researcher_instruction}"  # Changed to prepend full primitives list with stronger, direct language
+    # Extract and format discovered resources for injection into agent instructions
+    tools_list = discovered.get("tools/list", {}).get("tools", [])
+    resources_list = discovered.get("resources/list", {}).get("resources", [])
+    prompts_list = discovered.get("prompts/list", {}).get("prompts", [])
+    if tools_list or resources_list or prompts_list:
+        formatted_tools = "\n".join(f"- Name: {tool['name']}, Description: {tool['description']}" for tool in tools_list) if tools_list else "None available."
+        formatted_resources = "\n".join(f"- URI: {res['uri']}, Name: {res['name']}, Description: {res['description']}" for res in resources_list) if resources_list else "None available."
+        formatted_prompts = "\n".join(f"- Name: {prompt['name']}, Description: {prompt['description']}" for prompt in prompts_list) if prompts_list else "None available."
+        # Update global discovered_primitives with formatted values
+        discovered_primitives['tools'] = formatted_tools
+        discovered_primitives['resources'] = formatted_resources
+        discovered_primitives['prompts'] = formatted_prompts
     async with fast.run() as agent:
         await agent.interactive()
 
