@@ -1,0 +1,4 @@
+fast-agent-mcp  # Main framework (includes MCP support)
+python-dotenv>=1.0.1  # For loading .env files locally
+pyyaml>=6.0.1  # For writing yaml files
+requests>=2.31.0  # For MCP discovery calls

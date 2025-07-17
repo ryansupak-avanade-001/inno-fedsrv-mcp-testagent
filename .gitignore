@@ -1,0 +1,4 @@
+__pycache__/
+inno-mcp-fedsrv-testagent/
+backups/
+.env
