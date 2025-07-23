@@ -8,7 +8,7 @@ import traceback
 from dotenv import load_dotenv
 from langchain.agents import AgentExecutor, BaseSingleActionAgent
 from langchain_core.agents import AgentAction, AgentFinish
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferWindowMemory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain.prompts import PromptTemplate
 from langchain.tools import Tool
@@ -128,7 +128,7 @@ def call_grok_3(prompt, max_retries=3):
 class ExecutorAgent(BaseSingleActionAgent):
     tools: list
     instruction: str
-    memory: ConversationBufferMemory
+    memory: ConversationBufferWindowMemory
     resources_list: list
     prompts_list: list
 
@@ -247,14 +247,15 @@ def create_agents():
     prompt = PromptTemplate.from_template(instruction)
     resources_list = [f"{res['uri']}: {res['description']}" for res in resources_list]
     prompts_list = [f"{prompt['name']}: {prompt['description']}" for prompt in prompts_list]
-    memory = ConversationBufferMemory(
+    memory = ConversationBufferWindowMemory(
+        k=5,
         chat_memory=ChatMessageHistory(),
         return_messages=True,
-        memory_key="history"
+        memory_key="history",
+        output_key="output"
     )
-    mcp_executor = ExecutorAgent(tools=tools, instruction=instruction, memory=memory, resources_list=resources_list, prompts_list=prompts_list)
     mcp_executor = AgentExecutor(
-        agent=mcp_executor,
+        agent=ExecutorAgent(tools=tools, instruction=instruction, memory=memory, resources_list=resources_list, prompts_list=prompts_list),
         tools=tools,
         memory=memory,
         verbose=True,
