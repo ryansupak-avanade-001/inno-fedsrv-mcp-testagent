@@ -1,16 +1,14 @@
-# osdu_agent.py
-# OsduMCPAgent
 import os
 import json
 import requests
 import time
 import traceback
+from typing import List, Dict, Any
 from dotenv import load_dotenv
 from langchain.agents import AgentExecutor, BaseSingleActionAgent
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain.memory import ConversationBufferWindowMemory
 from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain.prompts import PromptTemplate
 from langchain.tools import Tool
 
 # Default fallback values
@@ -122,15 +120,25 @@ def call_grok_3(prompt, max_retries=3):
             print(f"Debug: Error on Grok 3 request attempt {attempt + 1}: {str(e)}")
         time.sleep(2 ** attempt)  # Exponential backoff
     print("Debug: Failed to retrieve Grok 3 response after retries")
-    return {"action": "error", "message": "Failed to process query"}
+    return {"action": "error", "message": "Failed to process prompt"}
 
 # Custom agent for MCP tool invocation with Grok 3
 class ExecutorAgent(BaseSingleActionAgent):
-    tools: list
+    tools: List[Tool]
     instruction: str
+    formatter_prompt: str
     memory: ConversationBufferWindowMemory
-    resources_list: list
-    prompts_list: list
+    resources_list: List[str]
+    prompts_list: List[str]
+
+    def __init__(self, tools: List[Tool], instruction: str, formatter_prompt: str, memory: ConversationBufferWindowMemory, resources_list: List[str], prompts_list: List[str]):
+        super().__init__(tools=tools, instruction=instruction, formatter_prompt=formatter_prompt, memory=memory, resources_list=resources_list, prompts_list=prompts_list)
+        self.tools = tools
+        self.instruction = instruction
+        self.formatter_prompt = formatter_prompt
+        self.memory = memory
+        self.resources_list = resources_list
+        self.prompts_list = prompts_list
 
     @property
     def input_keys(self):
@@ -141,17 +149,15 @@ class ExecutorAgent(BaseSingleActionAgent):
         print("Debug: Available tools:", [t.name for t in self.tools])
         print("Debug: Tool descriptions:", {t.name: t.description for t in self.tools})
         print("Debug: Tool selection intent:", "list tools" if "list tools" in query.lower() or "what are the tools" in query.lower() else "other")
-        print("Debug: Constructing prompt with instruction:", self.instruction)
+        print("Debug: Raw instruction string:", repr(self.instruction))
+        print("Debug: Raw formatter prompt:", repr(self.formatter_prompt))
         print("Debug: Conversation history:", self.memory.buffer_as_str)
-        prompt = self.instruction.format(
-            tools="\n".join(f"- Name: {t.name}, Description: {t.description}" for t in self.tools) if self.tools else "No tools available.",
-            resources="\n".join(self.resources_list) if self.resources_list else "No resources available.",
-            prompts="\n".join(self.prompts_list) if self.prompts_list else "No prompts available.",
-            history=self.memory.buffer_as_str,
-            query=query,
-            tool_names=", ".join(t.name for t in self.tools) if self.tools else "None",
-            agent_scratchpad=""
-        )
+        try:
+            prompt = f"{self.instruction}\nTools: {', '.join(f'Name: {t.name}, Description: {t.description}' for t in self.tools) if self.tools else 'No tools available.'}\nResources: {', '.join(self.resources_list) if self.resources_list else 'No resources available.'}\nPrompts: {', '.join(self.prompts_list) if self.prompts_list else 'No prompts available.'}\nPrevious conversation: {self.memory.buffer_as_str}\nQuery: {query}\nTool names: {', '.join(t.name for t in self.tools) if self.tools else 'None'}\nAgent scratchpad: "
+            print("Debug: Raw formatted prompt:", repr(prompt))
+        except Exception as e:
+            print(f"Debug: Template formatting error: {str(e)}")
+            return AgentFinish(return_values={"output": f"Error: Invalid template processing {str(e)}"}, log=f"Executor: Template formatting error: {str(e)}")
         print("Debug: Full Grok 3 prompt sent:", prompt)
         grok_response = call_grok_3(prompt)
         print("Debug: Full Grok 3 response:", json.dumps(grok_response, indent=2))
@@ -165,37 +171,66 @@ class ExecutorAgent(BaseSingleActionAgent):
         if grok_response.get("action") == "error":
             return AgentFinish(return_values={"output": grok_response.get("message", "Query processing failed")}, log="Executor: Error from Grok 3")
         
-        if grok_response.get("action") == "list":
-            if grok_response.get("type") == "tools":
-                if not self.tools:
-                    return AgentFinish(return_values={"output": "No tools available"}, log="Executor: No tools found")
-                return AgentFinish(return_values={"output": [f"{t.name}: {t.description}" for t in self.tools]}, log="Executor: Returning tool list")
-            elif grok_response.get("type") == "resources":
-                return AgentFinish(return_values={"output": self.resources_list if self.resources_list else ["No resources available"]}, log="Executor: Returning resource list")
-            elif grok_response.get("type") == "prompts":
-                return AgentFinish(return_values={"output": self.prompts_list if self.prompts_list else ["No prompts available"]}, log="Executor: Returning prompt list")
+        actions = grok_response.get("actions", []) if "actions" in grok_response else [{"action": grok_response.get("action"), "type": grok_response.get("type"), "tool_name": grok_response.get("tool_name"), "tool_input": grok_response.get("tool_input", {}), "resource_uri": grok_response.get("resource_uri", ""), "message": grok_response.get("message", "")}]
+        print("Debug: Processing actions:", actions)
+        combined_output = []
         
-        elif grok_response.get("action") == "tool":
-            tool_name = grok_response.get("tool_name")
-            tool_input = grok_response.get("tool_input", {})
-            print("Debug: Tool selection details - tool_name:", tool_name, "tool_input:", json.dumps(tool_input, indent=2))
-            for tool in self.tools:
-                if tool.name == tool_name:
-                    print("Debug: Matched tool:", tool.name)
-                    if not isinstance(tool_input, dict):
-                        print("Debug: Invalid tool_input type:", type(tool_input))
-                        return AgentFinish(return_values={"output": f"Error: Invalid tool input for {tool_name}"}, log="Executor: Invalid tool input")
-                    return AgentAction(tool=tool.name, tool_input=tool_input, log=f"Executor: Invoking {tool.name}")
-            print(f"Debug: Tool {tool_name} not found")
-            return AgentFinish(return_values={"output": f"Error: Tool {tool_name} not found"}, log="Executor: Tool not found")
+        for action_item in actions:
+            action = action_item.get("action")
+            if action == "list":
+                action_type = action_item.get("type")
+                print("Debug: Handling list action with type:", action_type)
+                if action_type == "tools":
+                    if not self.tools:
+                        combined_output.append("No tools available")
+                    else:
+                        combined_output.extend([f"{t.name}: {t.description}" for t in self.tools])
+                elif action_type == "resources":
+                    combined_output.extend(self.resources_list if self.resources_list else ["No resources available"])
+                elif action_type == "prompts":
+                    combined_output.extend(self.prompts_list if self.prompts_list else ["No prompts available"])
+                else:
+                    combined_output.append(f"Error: Invalid list type {action_type}")
+            elif action == "tool":
+                tool_name = action_item.get("tool_name")
+                tool_input = action_item.get("tool_input", {})
+                print("Debug: Tool selection details - tool_name:", tool_name, "tool_input:", json.dumps(tool_input, indent=2))
+                for tool in self.tools:
+                    if tool.name == tool_name:
+                        print("Debug: Matched tool:", tool.name)
+                        if not isinstance(tool_input, dict):
+                            print("Debug: Invalid tool_input type:", type(tool_input))
+                            combined_output.append(f"Error: Invalid tool input for {tool_name}")
+                        else:
+                            return AgentAction(tool=tool.name, tool_input=tool_input, log=f"Executor: Invoking {tool.name}")
+                print(f"Debug: Tool {tool_name} not found")
+                combined_output.append(f"Error: Tool {tool_name} not found")
+            elif action == "resource":
+                resource_uri = action_item.get("resource_uri", "")
+                if not resource_uri:
+                    print("Debug: Missing resource_uri in action")
+                    combined_output.append("Error: No resource URI provided")
+                else:
+                    result = send_mcp_request("resources/read", {"uri": resource_uri})
+                    combined_output.append(result)
+            else:
+                print("Debug: Invalid action in action_item:", action_item)
+                combined_output.append(f"Error: Invalid action {action}")
         
-        elif grok_response.get("action") == "resource":
-            resource_uri = grok_response.get("resource_uri", "")
-            if not resource_uri:
-                print("Debug: Missing resource_uri in grok_response")
-                return AgentFinish(return_values={"output": "Error: No resource URI provided"}, log="Executor: Missing resource URI")
-            result = send_mcp_request("resources/read", {"uri": resource_uri})
-            return AgentFinish(return_values={"output": result}, log=f"Executor: Reading resource {resource_uri}")
+        if combined_output:
+            print("Debug: Returning combined output:", combined_output)
+            # Second LLM trip to format the output
+            formatter_prompt = f"{self.formatter_prompt}\nOutput: {json.dumps(combined_output)}"
+            print("Debug: Raw formatter prompt sent:", repr(formatter_prompt))
+            formatted_response = call_grok_3(formatter_prompt)
+            print("Debug: Formatted Grok 3 response:", json.dumps(formatted_response, indent=2))
+            if isinstance(formatted_response, dict) and "tools" in formatted_response and "resources" in formatted_response:
+                # Convert formatted_response to JSON string to avoid ValidationError
+                formatted_output = json.dumps(formatted_response)
+                return AgentFinish(return_values={"output": formatted_output}, log="Executor: Returning formatted results")
+            else:
+                print("Debug: Invalid formatted response:", formatted_response)
+                return AgentFinish(return_values={"output": json.dumps(combined_output)}, log="Executor: Returning unformatted results due to invalid format")
         
         print("Debug: No valid action in grok_response:", grok_response)
         return AgentFinish(return_values={"output": "No relevant tool or action found"}, log="Executor: No action taken")
@@ -241,10 +276,17 @@ def create_agents():
     with open("config.json", 'r') as f:
         config_data = json.load(f)
     orchestrator_prompts = config_data.get("orchestrator_prompts", [])
+    formatter_prompts = config_data.get("formatter_prompts", [])
     if not orchestrator_prompts:
         raise ValueError("No orchestrator_prompts found in config.json")
-    instruction = "\n".join(orchestrator_prompts) + "\nTools: {tools}\nResources: {resources}\nPrompts: {prompts}\nPrevious conversation: {history}\nQuery: {query}\nTool names: {tool_names}\nAgent scratchpad: {agent_scratchpad}"
-    prompt = PromptTemplate.from_template(instruction)
+    if not formatter_prompts:
+        raise ValueError("No formatter_prompts found in config.json")
+    print("Debug: Raw orchestrator_prompts:", repr(orchestrator_prompts))
+    print("Debug: Raw formatter_prompts:", repr(formatter_prompts))
+    instruction = "\n".join(orchestrator_prompts)
+    formatter_prompt = "\n".join(formatter_prompts)
+    print("Debug: Raw instruction template created:", repr(instruction))
+    print("Debug: Raw formatter prompt created:", repr(formatter_prompt))
     resources_list = [f"{res['uri']}: {res['description']}" for res in resources_list]
     prompts_list = [f"{prompt['name']}: {prompt['description']}" for prompt in prompts_list]
     memory = ConversationBufferWindowMemory(
@@ -255,7 +297,14 @@ def create_agents():
         output_key="output"
     )
     mcp_executor = AgentExecutor(
-        agent=ExecutorAgent(tools=tools, instruction=instruction, memory=memory, resources_list=resources_list, prompts_list=prompts_list),
+        agent=ExecutorAgent(
+            tools=tools,
+            instruction=instruction,
+            formatter_prompt=formatter_prompt,
+            memory=memory,
+            resources_list=resources_list,
+            prompts_list=prompts_list
+        ),
         tools=tools,
         memory=memory,
         verbose=True,
@@ -278,7 +327,7 @@ def main():
             result = mcp_executor.invoke({"input": query})
             print("Orchestrator: Formatting and returning result")
             print("Result:", json.dumps(result["output"], indent=2))
-            mcp_executor.memory.save_context({"input": query}, {"output": json.dumps(result["output"])})
+            mcp_executor.memory.save_context({"input": query}, {"output": result["output"]})
         except Exception as e:
             print(f"Error processing query: {str(e)}")
             print("Debug: Error details:", str(e), "Traceback:", traceback.format_exc())

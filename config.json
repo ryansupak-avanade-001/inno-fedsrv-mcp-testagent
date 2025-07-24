@@ -9,14 +9,18 @@
     "- Tool call: If query matches a tool description, return action 'tool', tool_name, tool_input (from schema).",
     "- Resource read: If query asks for data from a resource URI, return action 'resource', resource_uri.",
     "- List primitives: If query asks to list tools (e.g., 'What are the Tools available?', 'list tools', 'show tools', 'Can you list Tools?'), resources, or prompts, return action 'list', type 'tools', 'resources', or 'prompts'.",
+    "For combined queries (e.g., 'list Tools and Resources'), return an array of actions (e.g., [{action: 'list', type: 'tools'}, {action: 'list', type: 'resources'}]).",
     "Use semantic understanding to handle variations (e.g., 'show wells' = list_all_wells).",
-    "Extract parameters from query (e.g., 'casings for well2' = tool_input {{'well_id': 'well2'}}).",
-    "Return JSON: {{action: 'tool'|'resource'|'list'|'error', tool_name: string, tool_input: dict, resource_uri: string, type: string, message: string}}",
-    "Ensure queries asking for available tools (e.g., 'What are the Tools available?') return action 'list' with type 'tools'.",
-    "Do not map queries asking to list tools (e.g., 'list tools', 'What are the Tools?') to tools like 'list_all_wells' requiring well_id."
+    "Extract parameters from query (e.g., 'casings for well2' = tool_input {well_id: 'well2'}).",
+    "Return JSON: {actions: [{action: 'tool'|'resource'|'list'|'error', tool_name: string, tool_input: dict, resource_uri: string, type: string, message: string}]} or {action: 'tool'|'resource'|'list'|'error', tool_name: string, tool_input: dict, resource_uri: string, type: string, message: string} for single actions.",
+    "Ensure queries asking for available tools (e.g., 'What are the Tools available?') return [{action: 'list', type: 'tools'}]. Do not map to tools like 'list_all_wells' requiring well_id."
   ],
   "executor_prompts": [
-    "Confirm tool or resource selection for the sub-task: {sub_task}.",
+    "Confirm tool or resource selection for the provided sub-task.",
     "Return JSON: {action: 'tool'|'resource', tool_name: string, tool_input: dict, resource_uri: string}"
+  ],
+  "formatter_prompts": [
+    "Format the following list into a structured JSON object with separate tools and resources fields, returning the result as a JSON string.",
+    "Return JSON: {tools: [{name: string, description: string}], resources: [{uri: string, description: string}]}"
   ]
 }
