@@ -2,7 +2,7 @@
 
 ## Introduction
 
-The MCP Agent (`mcp_agent.py`) is a Python-based application designed to interact with any Anthropic MCP server using JSON-RPC 2.0, enabling dynamic discovery and invocation of tools, resources, and prompts. Its initial implementation is tested against an OSDU-specific MCP server, providing access to OSDU data via tools (`add_numbers`, `get_casings_for_well`, `list_all_wells`) and resources (`osdu:wells`, `osdu:trajectories`, `osdu:casings`). It uses Langchain for agent orchestration, Grok 3 for semantic query matching, and `requests` for JSON-RPC communication. The agent is a generic implementation for interacting with any Anthropic MCP server via JSON-RPC 2.0, with its initial implementation tested against an OSDU-specific MCP server. It supports natural language queries (e.g., "Can you list Tools?", "list wells") for MCP tools and resources, with basic context awareness (storing conversation history). Advanced context-aware follow-ups (e.g., "How many are over 500 feet?" after "list wells") and multi-step query handling are upcoming. It operates with minimal dependencies.
+The MCP Agent (`mcp_agent.py`) is a Python-based application designed to interact with any Anthropic MCP server using JSON-RPC 2.0, enabling dynamic discovery and invocation of tools, resources, and prompts. Its initial implementation is tested against an OSDU-specific MCP server, providing access to OSDU data via tools (`add_numbers`, `get_casings_for_well`, `list_all_wells`) and resources (`osdu:wells`, `osdu:trajectories`, `osdu:casings`). It uses Langchain for agent orchestration, Grok 3 for semantic query matching, and `requests` for JSON-RPC communication. The agent is a generic implementation for interacting with any Anthropic MCP server via JSON-RPC 2.0, with its initial implementation tested against an OSDU-specific MCP server. It supports natural language queries (e.g., "Can you list Tools?", "list wells") for MCP tools and resources, with basic context awareness (storing conversation history). Advanced context-aware follow-ups (e.g., "How many are over 500 feet?" after "list wells") are upcoming. It operates with minimal dependencies.
 
 ## Setup
 
@@ -49,7 +49,7 @@ The MCP Agent (`mcp_agent.py`) is a Python-based application designed to interac
 2. **Update `config.json`**:
    - Ensure `xai_api_key` is set (or use `.env`).
    - Set `default_mcp_server` to your MCP server URL (e.g., OSDU server or custom MCP server).
-   - `orchestrator_prompts` and `executor_prompts` are pre-configured for semantic matching and expandability.
+   - `orchestrator_prompts`, `executor_prompts`, and `formatter_prompts` are pre-configured for semantic matching, tool execution, and output formatting.
 
    Example `config.json`:
    ```json
@@ -71,8 +71,12 @@ The MCP Agent (`mcp_agent.py`) is a Python-based application designed to interac
        "Do not map queries asking to list tools (e.g., 'list tools', 'What are the Tools?') to tools like 'list_all_wells' requiring well_id."
      ],
      "executor_prompts": [
-       "Confirm tool or resource selection for the sub-task: {sub_task}.",
+       "Confirm tool or resource selection for the provided sub-task.",
        "Return JSON: {action: 'tool'|'resource', tool_name: string, tool_input: dict, resource_uri: string}"
+     ],
+     "formatter_prompts": [
+       "Format the following list into a structured JSON object with separate tools and resources fields, returning both structured data and explanatory text.",
+       "Return JSON: {data: {tools: [{name: string, description: string}], resources: [{uri: string, description: string}]}, explanation: string}"
      ]
    }
    ```
@@ -112,12 +116,13 @@ The MCP Agent (`mcp_agent.py`) is a Python-based application designed to interac
 
 - **Orchestrator** (`main` function):
   - Manages the interactive loop, receiving user queries (line 229).
-  - Maintains conversation memory using `ConversationBufferMemory` with `ChatMessageHistory` (line 205).
+  - Maintains conversation memory using `ConversationBufferWindowMemory` with `ChatMessageHistory` (line 205).
   - Delegates queries to the Executor, logs actions, and formats results (lines 236–246).
 - **Executor** (`ExecutorAgent` class):
   - Uses Grok 3 via `call_grok_3` for semantic matching of single-step queries (lines 85–106).
-  - Maps queries to MCP actions (tool call, resource read, list primitives) based on Grok 3’s JSON response (lines 108–134).
+  - Maps queries to MCP actions (tool call, resource read, list primitives) based on Grok 3’s JSON response, supporting multiple actions for combined queries (e.g., "list Tools and Resources" returns `[{action: 'list', type: 'tools'}, {action: 'list', type: 'resources'}]`) (lines 108–134).
   - Executes tool calls via `send_mcp_request` (lines 67–83).
+  - Formats output using a second Grok 3 call with `formatter_prompts` from `config.json`, producing structured JSON (e.g., `{"data": {"tools": [{name, description}], "resources": [{uri, description}]}, "explanation": "Available Tools:\n- add_numbers: Adds two integers.\nAvailable Resources:\n- osdu:wells: Retrieves OSDU Well data."}`) for readability (lines 135–150).
   - Dynamically discovers tools, resources, and prompts from any MCP server using JSON-RPC 2.0, making it adaptable to non-OSDU MCP servers by updating `default_mcp_server` in `config.json`.
 
 ### Data Flow
@@ -128,12 +133,12 @@ The MCP Agent (`mcp_agent.py`) is a Python-based application designed to interac
    - Constructs a prompt from `orchestrator_prompts` in `config.json`, including tools, resources, prompts, history, query, tool_names, and agent_scratchpad for single-step query processing (line 115).
    - Sends prompt to Grok 3, parses response (e.g., `{action: "list", type: "tools"}`).
    - Executes action (e.g., return tool list, call `tools/call`, read resource).
+   - Formats the result using a second Grok 3 call with `formatter_prompts`, returning structured JSON with data and explanatory text.
 4. **Orchestrator**: Formats result as JSON (line 243), updates memory (line 246), and returns to user.
 
 ## Upcoming Intended Features
 
 - **Advanced context-aware follow-ups**: Process follow-up queries (e.g., "How many are over 500 feet?" after "list wells") by computing results from conversation history using Grok 3.
-- **Orchestrator final step summarization**: Handle multi-step queries (e.g., "Get wells, match casings, sort by depth") with a final LLM call to aggregate/format results, using a `needs_formatting` flag in Grok 3 responses.
 - **Unrelated query handling**: Provide meaningful responses for queries outside MCP capabilities (e.g., "What is the weather today?") by redirecting to relevant MCP actions or offering concise general answers.
 - **Memory overflow handling**: Implement `ConversationSummaryBufferMemory` to summarize large conversation histories, preventing token limit issues.
 - **Additional contingencies**: Support data privacy (e.g., sanitizing sensitive data), parallel execution (e.g., concurrent tool calls), and robust validation of tool inputs.
